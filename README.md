@@ -1,5 +1,7 @@
 # ParcelPilot Assist
 
+**Demo:** [http://13.233.45.207:3000](http://13.233.45.207:3000)
+
 AI support agent for **ParcelPilot** (B2B logistics), built for the CalQuity AI Agent Assessment.
 
 Customer and internal users can ask natural-language questions about orders, cancellations, service credits, SLAs, and policies. The system answers only from the supplied data pack, enforces account access in the **tool layer**, shows which tools ran, and requires **human confirmation** before write actions (escalation, ticket update, follow-up).
@@ -95,6 +97,8 @@ flowchart TB
   Trust --> ChatApp
   Gemini --> Chroma
 ```
+
+
 
 Request flow: UI streams chat → FastAPI → LangGraph agent (Groq) → ACL-gated tools → Postgres / Chroma → trust synthesis on the final answer. Write tools pause at HITL until Confirm/Cancel.
 
@@ -266,7 +270,7 @@ More scenarios: see assessment golden cases (cancel fees, credits, SLA, KI-208/2
 
 ---
 
-## Architecture note 
+## Architecture note
 
 ### Agent design
 
@@ -281,7 +285,7 @@ More scenarios: see assessment golden cases (cancel fees, credits, SLA, KI-208/2
 | --------------------------------------------------------------- | ------------------------------------------------------------------------------ |
 | `list_documents`                                                | Optional catalog refresh (catalog also injected in the prompt)                 |
 | `document_search`                                               | RAG over policies, SOP, agreements, known issues (ACL-filtered)                |
-| `structured_data_query`                                         | `get_`* / `list_*` plus `calc_cancellation`, `calc_service_credit`, `calc_sla` |
+| `structured_data_query`                                         | `get_`* / `list_`* plus `calc_cancellation`, `calc_service_credit`, `calc_sla` |
 | `create_escalation` / `update_ticket` / `create_follow_up_task` | Propose → HITL → execute + audit                                               |
 
 
@@ -319,8 +323,6 @@ Precedence: **signed customer agreement > current policy/SOP > product docs**. H
 
 *(Proactive ops dashboard / issue detection is planned as Problem 1 stretch; core chat + trust + HITL ship first.)*
 
-
-
 ---
 
 ## AI tool usage
@@ -332,10 +334,10 @@ Developed with **Cursor** (AI-assisted coding) for scaffolding, tool/ACL wiring,
 ## Hosted application
 
 
-| Service | URL |
-| ------- | --- |
-| Web     |     |
-| API     |     |
+| Service | URL                                                    |
+| ------- | ------------------------------------------------------ |
+| Web     | [http://13.233.45.207:3000](http://13.233.45.207:3000) |
+| API     | [http://13.233.45.207:8000](http://13.233.45.207:8000) |
 
 
 ---
