@@ -276,7 +276,7 @@ More scenarios: see assessment golden cases (cancel fees, credits, SLA, KI-208/2
 
 The agent is a **LangGraph ReAct loop** backed by Groq (`openai/gpt-oss-20b`). Each chat turn gets a system prompt scoped to the signed-in persona: role, account scope, the fixed assessment snapshot clock, and a catalog of available documents. The model decides which tools to call and in what order; the API streams token output plus tool-start and tool-end events so the UI can show live progress.
 
-Write paths (`create_escalation`, `update_ticket`, `create_follow_up_task`) use LangGraph **`interrupt()`**. The graph pauses with a draft payload; the client resumes with Confirm or Cancel via `/chat/resume` (and stream variants). The agent is instructed not to claim a write succeeded until the resume path returns a result reference.
+Write paths (`create_escalation`, `update_ticket`, `create_follow_up_task`) use LangGraph `**interrupt()`**. The graph pauses with a draft payload; the client resumes with Confirm or Cancel via `/chat/resume` (and stream variants). The agent is instructed not to claim a write succeeded until the resume path returns a result reference.
 
 Groq rate limits are handled with an optional second API key (`GROQ_API_KEY_2`) that retries on 429 / TPM errors.
 
@@ -284,13 +284,15 @@ Groq rate limits are handled with an optional second API key (`GROQ_API_KEY_2`) 
 
 Five agent-facing tools, with ACL enforced **inside the tool layer** (not only in the prompt):
 
-| Tool | Role |
-| ---- | ---- |
-| `document_search` | RAG over policies, SOPs, agreements, and known-issue PDFs (metadata-filtered by authority and account) |
-| `structured_data_query` | Lookups (`get_order`, `get_ticket`, `list_*`) and calculators (`calc_cancellation`, `calc_service_credit`, `calc_sla`) |
-| `create_escalation` | Propose escalation → HITL → write + audit |
-| `update_ticket` | Propose ticket change → HITL → write + audit |
-| `create_follow_up_task` | Propose follow-up task → HITL → write + audit |
+
+| Tool                    | Role                                                                                                                   |
+| ----------------------- | ---------------------------------------------------------------------------------------------------------------------- |
+| `document_search`       | RAG over policies, SOPs, agreements, and known-issue PDFs (metadata-filtered by authority and account)                 |
+| `structured_data_query` | Lookups (`get_order`, `get_ticket`, `list_`*) and calculators (`calc_cancellation`, `calc_service_credit`, `calc_sla`) |
+| `create_escalation`     | Propose escalation → HITL → write + audit                                                                              |
+| `update_ticket`         | Propose ticket change → HITL → write + audit                                                                           |
+| `create_follow_up_task` | Propose follow-up task → HITL → write + audit                                                                          |
+
 
 Customers are scoped to their `account_id`; internal personas can query across accounts. Calculators return structured JSON so fees, credits, and SLA windows are deterministic rather than LLM arithmetic.
 
@@ -308,14 +310,16 @@ After each agent turn, **trust synthesis** inspects tool traces and attaches cit
 
 ### Major technical trade-offs
 
-| Choice | Why |
-| ------ | --- |
-| Groq + Gemini split | Keeps free-tier viable; chat and embeddings on providers suited to each job |
-| Calculators in tools | Reliable money and SLA math; reduces hallucinated fees |
-| In-memory LangGraph checkpointer | Simple for demo; thread state clears on API restart (Postgres mutations persist separately) |
-| Chroma on API disk / Docker volume | Low ops overhead for assessment; re-ingest on fresh hosts |
-| Mock JWT personas | Meets role/account requirements without building a full IdP |
-| HITL on all writes | Safer demo and closer to real support workflows; adds a resume step in the API |
+
+| Choice                             | Why                                                                                         |
+| ---------------------------------- | ------------------------------------------------------------------------------------------- |
+| Groq + Gemini split                | Keeps free-tier viable; chat and embeddings on providers suited to each job                 |
+| Calculators in tools               | Reliable money and SLA math; reduces hallucinated fees                                      |
+| In-memory LangGraph checkpointer   | Simple for demo; thread state clears on API restart (Postgres mutations persist separately) |
+| Chroma on API disk / Docker volume | Low ops overhead for assessment; re-ingest on fresh hosts                                   |
+| Mock JWT personas                  | Meets role/account requirements without building a full IdP                                 |
+| HITL on all writes                 | Safer demo and closer to real support workflows; adds a resume step in the API              |
+
 
 ---
 
@@ -325,22 +329,8 @@ After each agent turn, **trust synthesis** inspects tool traces and attaches cit
 
 I chose **Problem 2 — trust and reliability under imperfect sources**.
 
-ParcelPilot support must answer from agreements, SOPs, deprecated policy, product docs, and ticket history that can disagree. A plain RAG chatbot would either blend sources or pick one arbitrarily. This submission addresses that with: tool-gated facts, explicit precedence rules, conflict surfacing in the trust block, and abstain/escalate behavior when required fields are missing (e.g. unknown `carrier_fault` on a credit question).
+ParcelPilot support must answer from agreements, SOPs, deprecated policy, product docs, and ticket history that can disagree. A plain RAG chatbot would either blend sources or pick one arbitrarily. This submission addresses that with: tool-gated facts, explicit precedence rules, conflict surfacing in the trust block, and abstain/escalate behavior when required fields are missing (e.g. unknown `carrier_fault` on a credit question).  
 
-### What else I would build for ParcelPilot
-
-- **Proactive ops dashboard (Problem 1):** surface SLA breaches, stale tickets, and account-level risk before customers ask — fed by the same Postgres + policy rules.
-- **Persistent conversation history** and agent handoff for support teams.
-- **Eval harness** against golden scenarios (G1–G17) in CI, plus regression checks after prompt or tool changes.
-- **Elastic IP / domain + TLS** for stable hosted demos and stricter CORS.
-
-### Intentionally left out of this submission
-
-- Real SSO / production identity provider (mock JWT personas only).
-- Multi-tenant billing, carrier integrations, and live shipment tracking APIs.
-- Automated ticket resolution without HITL — all writes require Confirm.
-- Full ops dashboard and batch anomaly detection (described above as follow-on, not shipped).
-- Confidence badge in the UI (trust metadata remains in the trust block; display simplified for clarity).
 
 ### Metric for product usefulness
 
