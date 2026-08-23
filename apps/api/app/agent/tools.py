@@ -326,7 +326,9 @@ def build_agent_tools(user: AuthUser, db: Session) -> list[StructuredTool]:
             name="structured_data_query",
             description=(
                 "Lookup accounts/orders/tickets or run calculators "
-                "(calc_cancellation, calc_service_credit, calc_sla)."
+                "(calc_cancellation, calc_service_credit, calc_sla). "
+                "get_ticket also returns parsed_order_ids and related_orders inferred "
+                "from ticket text (ORD-#### mentions, carrier/status hints)."
             ),
             func=_structured_data,
             args_schema=StructuredDataArgs,

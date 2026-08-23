@@ -270,64 +270,89 @@ More scenarios: see assessment golden cases (cancel fees, credits, SLA, KI-208/2
 
 ---
 
-## Architecture note
+## 4. Architecture note
 
 ### Agent design
 
-- LangGraph **ReAct** agent with a system prompt scoped to the signed-in persona (role, account, snapshot clock, document catalog).
-- Tools are bound per request; the model decides call order. Streaming exposes tool start/end events to the UI.
-- Write tools use LangGraph `interrupt()` so execution waits for Confirm/Cancel (`/chat/resume` / stream variants).
+The agent is a **LangGraph ReAct loop** backed by Groq (`openai/gpt-oss-20b`). Each chat turn gets a system prompt scoped to the signed-in persona: role, account scope, the fixed assessment snapshot clock, and a catalog of available documents. The model decides which tools to call and in what order; the API streams token output plus tool-start and tool-end events so the UI can show live progress.
+
+Write paths (`create_escalation`, `update_ticket`, `create_follow_up_task`) use LangGraph **`interrupt()`**. The graph pauses with a draft payload; the client resumes with Confirm or Cancel via `/chat/resume` (and stream variants). The agent is instructed not to claim a write succeeded until the resume path returns a result reference.
+
+Groq rate limits are handled with an optional second API key (`GROQ_API_KEY_2`) that retries on 429 / TPM errors.
 
 ### Tool design
 
+Five agent-facing tools, with ACL enforced **inside the tool layer** (not only in the prompt):
 
-| Tool                                                            | Role                                                                           |
-| --------------------------------------------------------------- | ------------------------------------------------------------------------------ |
-| `list_documents`                                                | Optional catalog refresh (catalog also injected in the prompt)                 |
-| `document_search`                                               | RAG over policies, SOP, agreements, known issues (ACL-filtered)                |
-| `structured_data_query`                                         | `get_`* / `list_`* plus `calc_cancellation`, `calc_service_credit`, `calc_sla` |
-| `create_escalation` / `update_ticket` / `create_follow_up_task` | Propose → HITL → execute + audit                                               |
+| Tool | Role |
+| ---- | ---- |
+| `document_search` | RAG over policies, SOPs, agreements, and known-issue PDFs (metadata-filtered by authority and account) |
+| `structured_data_query` | Lookups (`get_order`, `get_ticket`, `list_*`) and calculators (`calc_cancellation`, `calc_service_credit`, `calc_sla`) |
+| `create_escalation` | Propose escalation → HITL → write + audit |
+| `update_ticket` | Propose ticket change → HITL → write + audit |
+| `create_follow_up_task` | Propose follow-up task → HITL → write + audit |
 
-
-Access control is enforced **inside tools**, not only in the prompt (customers cannot read other accounts).
+Customers are scoped to their `account_id`; internal personas can query across accounts. Calculators return structured JSON so fees, credits, and SLA windows are deterministic rather than LLM arithmetic.
 
 ### Document and structured-data handling
 
-- PDFs: section-aware chunking → Gemini embeddings → Chroma with authority metadata (`status`, `doc_type`, `authority_rank`, `account_id`).
-- Excel: accounts, orders, tickets in Postgres; calculators use the snapshot clock for time math.
-- Deprecated Support Policy v2 is indexed but demoted / excluded from default “current” answers.
+**Documents:** PDFs are chunked with section awareness, embedded with Gemini (`gemini-embedding-001`, 768-dim), and stored in Chroma with metadata (`doc_type`, `status`, `authority_rank`, `account_id`). Search applies filters so deprecated policy (e.g. Support Policy v2) is indexed but demoted from default “current policy” answers.
+
+**Structured data:** The assessment Excel pack is ingested into Postgres (accounts, orders, tickets, document registry). All time-based eligibility (SLA breach, cancellation windows, booking age) uses the configured snapshot clock (`2026-08-16 11:00 Asia/Kolkata`), not wall-clock time.
 
 ### Source reliability and conflict handling
 
-Precedence: **signed customer agreement > current policy/SOP > product docs**. Historical tickets are context only and may be wrong. Trust synthesis after the agent turn attaches conflicts, citations, and flags (abstain, manager approval, escalation recommended). Agreement overrides (e.g. Northstar cancel fee ₹0 vs SOP ₹250) are called out explicitly.
+Source precedence is explicit: **signed customer agreement > current policy/SOP > product docs**. Historical tickets are treated as context only and may be wrong (e.g. misguided guidance on TKT-450).
 
-### Major trade-offs
+After each agent turn, **trust synthesis** inspects tool traces and attaches citations, conflict notes when sources disagree, and flags such as abstain, manager approval recommended, or escalation recommended. When an agreement overrides SOP (Northstar cancellation fee ₹0 vs SOP ₹250), the answer and trust block call that out directly instead of silently picking one source.
 
+### Major technical trade-offs
 
-| Choice                           | Why                                                          |
-| -------------------------------- | ------------------------------------------------------------ |
-| Groq + Gemini split              | Free-tier friendly; embeddings vs chat providers specialized |
-| Calculators in tools             | Deterministic fees/SLA/credits instead of LLM arithmetic     |
-| In-memory LangGraph checkpointer | Simple for demo; restart clears threads (DB is separate)     |
-| Chroma on API disk               | Simple local RAG; re-ingest on fresh hosts                   |
-| Mock JWT personas                | Meets assessment auth without a real IdP                     |
-
+| Choice | Why |
+| ------ | --- |
+| Groq + Gemini split | Keeps free-tier viable; chat and embeddings on providers suited to each job |
+| Calculators in tools | Reliable money and SLA math; reduces hallucinated fees |
+| In-memory LangGraph checkpointer | Simple for demo; thread state clears on API restart (Postgres mutations persist separately) |
+| Chroma on API disk / Docker volume | Low ops overhead for assessment; re-ingest on fresh hosts |
+| Mock JWT personas | Meets role/account requirements without building a full IdP |
+| HITL on all writes | Safer demo and closer to real support workflows; adds a resume step in the API |
 
 ---
 
-## Product note (short)
+## 5. Product note
 
 ### Additional client problem addressed
 
-**Trust and reliability (Problem 2):** imperfect sources, agreement vs SOP conflicts, deprecated policy, and historical misguidance (e.g. TKT-450) are handled with precedence rules, conflict notes, and abstain/escalate behavior—not a single undifferentiated RAG dump.
+I chose **Problem 2 — trust and reliability under imperfect sources**.
 
-*(Proactive ops dashboard / issue detection is planned as Problem 1 stretch; core chat + trust + HITL ship first.)*
+ParcelPilot support must answer from agreements, SOPs, deprecated policy, product docs, and ticket history that can disagree. A plain RAG chatbot would either blend sources or pick one arbitrarily. This submission addresses that with: tool-gated facts, explicit precedence rules, conflict surfacing in the trust block, and abstain/escalate behavior when required fields are missing (e.g. unknown `carrier_fault` on a credit question).
+
+### What else I would build for ParcelPilot
+
+- **Proactive ops dashboard (Problem 1):** surface SLA breaches, stale tickets, and account-level risk before customers ask — fed by the same Postgres + policy rules.
+- **Persistent conversation history** and agent handoff for support teams.
+- **Eval harness** against golden scenarios (G1–G17) in CI, plus regression checks after prompt or tool changes.
+- **Elastic IP / domain + TLS** for stable hosted demos and stricter CORS.
+
+### Intentionally left out of this submission
+
+- Real SSO / production identity provider (mock JWT personas only).
+- Multi-tenant billing, carrier integrations, and live shipment tracking APIs.
+- Automated ticket resolution without HITL — all writes require Confirm.
+- Full ops dashboard and batch anomaly detection (described above as follow-on, not shipped).
+- Confidence badge in the UI (trust metadata remains in the trust block; display simplified for clarity).
+
+### Metric for product usefulness
+
+**Resolution rate without human correction** — for a sampled set of support conversations, the share where the agent’s final answer (including calculator results and cited policy) matches what a support lead would approve *and* no write action required rollback or override. I would segment this by persona (customer vs internal) and by query type (lookup vs policy vs calculator vs write).
 
 ---
 
-## AI tool usage
+## 6. AI tool usage
 
-Developed with **Cursor** (AI-assisted coding) for scaffolding, tool/ACL wiring, LangGraph HITL, and UI. Design decisions, trust rules, and calculators were specified against the assessment brief and data pack; generated code was reviewed and tested locally.
+I used **Cursor** as an AI coding assistant throughout the project. It helped with scaffolding, boilerplate, and faster iteration on implementation details — things like API routes, Docker setup, UI wiring, and test stubs.
+
+The overall direction — agent architecture, tool boundaries, trust/HITL behavior, and how customer vs internal flows should work — came from my own design choices against the assessment brief. I used the assistant to explore options, sanity-check trade-offs, and combine those ideas into working code, then reviewed and adjusted what it produced (including running `pytest` and manual demo checks) before treating it as final.
 
 ---
 

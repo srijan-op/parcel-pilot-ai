@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from datetime import datetime
 from typing import Any
 
@@ -35,6 +36,8 @@ READY_CALC_INTENTS = frozenset({"calc_cancellation", "calc_service_credit", "cal
 PENDING_CALC_INTENTS = CALC_INTENTS - READY_CALC_INTENTS
 
 ALL_INTENTS = LOOKUP_INTENTS | READY_CALC_INTENTS
+
+_ORDER_ID_RE = re.compile(r"ORD-\d+", re.IGNORECASE)
 
 
 def _dt(value: datetime | None) -> str | None:
@@ -85,6 +88,87 @@ def serialize_ticket(row: Ticket) -> dict[str, Any]:
         "last_customer_message_at": _dt(row.last_customer_message_at),
         "historical_resolution": row.historical_resolution,
     }
+
+
+def extract_order_ids_from_text(*texts: str | None) -> list[str]:
+    """Parse ORD-#### references from ticket text fields."""
+    found: list[str] = []
+    seen: set[str] = set()
+    for text in texts:
+        if not text:
+            continue
+        for match in _ORDER_ID_RE.findall(text):
+            order_id = match.upper()
+            if order_id not in seen:
+                seen.add(order_id)
+                found.append(order_id)
+    return found
+
+
+def _ticket_text_blob(ticket: Ticket) -> str:
+    parts = [ticket.subject or "", ticket.description or "", ticket.historical_resolution or ""]
+    return " ".join(parts)
+
+
+def _order_matches_ticket_context(order: Order, ticket: Ticket, parsed_order_ids: list[str]) -> bool:
+    if order.order_id in parsed_order_ids:
+        return True
+
+    haystack = _ticket_text_blob(ticket).lower()
+    if not haystack:
+        return False
+
+    carrier = (order.carrier or "").strip().lower()
+    if carrier and carrier in haystack:
+        return True
+
+    status = (order.status or "").strip().upper()
+    if status and status in haystack.upper():
+        # Require carrier or explicit order id hint to avoid listing every BOOKED order.
+        if carrier and carrier in haystack:
+            return True
+
+    return False
+
+
+def related_orders_for_ticket(db: Session, ticket: Ticket) -> list[Order]:
+    """
+    Orders linked to a ticket by explicit ORD-#### mentions or subject/description
+    hints (carrier name, status keywords).
+    """
+    parsed_order_ids = extract_order_ids_from_text(
+        ticket.subject,
+        ticket.description,
+        ticket.historical_resolution,
+    )
+
+    account_orders = list(
+        db.scalars(
+            select(Order)
+            .where(Order.account_id == ticket.account_id)
+            .order_by(Order.booked_at.desc())
+        ).all()
+    )
+
+    related: list[Order] = []
+    seen: set[str] = set()
+
+    for order_id in parsed_order_ids:
+        row = db.get(Order, order_id)
+        if row is None or row.account_id != ticket.account_id:
+            continue
+        if row.order_id not in seen:
+            seen.add(row.order_id)
+            related.append(row)
+
+    for row in account_orders:
+        if row.order_id in seen:
+            continue
+        if _order_matches_ticket_context(row, ticket, parsed_order_ids):
+            seen.add(row.order_id)
+            related.append(row)
+
+    return related
 
 
 def structured_data_query(
@@ -256,7 +340,19 @@ def _get_ticket(db: Session, user: AuthUser, ticket_id: str | None) -> dict[str,
     if row is None:
         raise LookupError(f"Ticket not found: {tid}")
     assert_account_access(user, row.account_id)
-    return {"intent": "get_ticket", "data": serialize_ticket(row)}
+
+    parsed_order_ids = extract_order_ids_from_text(
+        row.subject,
+        row.description,
+        row.historical_resolution,
+    )
+    related = related_orders_for_ticket(db, row)
+
+    payload = serialize_ticket(row)
+    payload["parsed_order_ids"] = parsed_order_ids
+    payload["related_orders"] = [serialize_order(order) for order in related]
+
+    return {"intent": "get_ticket", "data": payload}
 
 
 def _list_tickets(
@@ -287,5 +383,7 @@ __all__ = [
     "ALL_INTENTS",
     "LOOKUP_INTENTS",
     "READY_CALC_INTENTS",
+    "extract_order_ids_from_text",
+    "related_orders_for_ticket",
     "structured_data_query",
 ]
