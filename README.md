@@ -21,25 +21,116 @@ Customer and internal users can ask natural-language questions about orders, can
 
 ## Stack
 
-| Layer | Choice |
-|-------|--------|
-| Frontend | Next.js (App Router) + TypeScript |
-| API / agent | FastAPI + LangGraph (ReAct) |
-| LLM | Groq (`openai/gpt-oss-20b`) |
-| Embeddings | Google Gemini (`gemini-embedding-001`, 768-dim) |
-| Structured data | PostgreSQL (e.g. Supabase) |
-| Documents | ChromaDB (local persist) + PDF chunking |
+
+| Layer           | Choice                                          |
+| --------------- | ----------------------------------------------- |
+| Frontend        | Next.js (App Router) + TypeScript               |
+| API / agent     | FastAPI + LangGraph (ReAct)                     |
+| LLM             | Groq (`openai/gpt-oss-20b`)                     |
+| Embeddings      | Google Gemini (`gemini-embedding-001`, 768-dim) |
+| Structured data | PostgreSQL (e.g. Supabase)                      |
+| Documents       | ChromaDB (local persist) + PDF chunking         |
+
 
 ---
 
-## Repository layout
+## Architecture
+
+```mermaid
+flowchart TB
+  subgraph clients [Clients]
+    CustUI[Customer chat UI]
+    IntUI[Internal chat UI]
+  end
+
+  subgraph web [apps/web — Next.js]
+    ChatApp[ChatApp + SSE stream]
+    Personas[Persona picker / JWT]
+  end
+
+  subgraph api [apps/api — FastAPI]
+    Auth[JWT mock auth + ACL]
+    ChatRoutes["/chat + /chat/stream + resume"]
+    Agent[LangGraph ReAct agent]
+    Tools[Tool layer]
+    Trust[Trust synthesis]
+    HITL[HITL interrupt Confirm/Cancel]
+  end
+
+  subgraph tools [Tools]
+    DocSearch[document_search]
+    StructQ[structured_data_query]
+    Calcs[calc_cancellation / credit / sla]
+    Writes[escalate / update_ticket / follow-up]
+  end
+
+  subgraph data [Data stores]
+    PG[(PostgreSQL)]
+    Chroma[(ChromaDB)]
+  end
+
+  subgraph providers [External APIs]
+    Groq[Groq LLM]
+    Gemini[Gemini embeddings]
+  end
+
+  CustUI --> ChatApp
+  IntUI --> ChatApp
+  Personas --> Auth
+  ChatApp --> ChatRoutes
+  ChatRoutes --> Auth
+  ChatRoutes --> Agent
+  Agent --> Groq
+  Agent --> Tools
+  Tools --> DocSearch
+  Tools --> StructQ
+  Tools --> Calcs
+  Tools --> Writes
+  DocSearch --> Chroma
+  StructQ --> PG
+  Calcs --> PG
+  Writes --> HITL
+  HITL --> PG
+  Agent --> Trust
+  Trust --> ChatApp
+  Gemini --> Chroma
+```
+
+Request flow: UI streams chat → FastAPI → LangGraph agent (Groq) → ACL-gated tools → Postgres / Chroma → trust synthesis on the final answer. Write tools pause at HITL until Confirm/Cancel.
+
+---
+
+## Repository structure
 
 ```text
-apps/
-  api/     FastAPI + LangGraph agent, tools, ingest, trust
-  web/     Next.js chat UI
-Data/      Candidate PDFs + ParcelPilot_Assessment_Data.xlsx
-tests/     API tests
+parcel-pilot-ai/
+├── README.md
+├── IMPLEMENTATION_NOTES.md      # Longer phase-by-phase notes
+├── apps/
+│   ├── api/                     # FastAPI + LangGraph
+│   │   ├── app/
+│   │   │   ├── agent/           # Graph, prompts, tool bindings
+│   │   │   ├── auth/            # JWT personas, ACL
+│   │   │   ├── db/              # SQLAlchemy models / session
+│   │   │   ├── embeddings/      # Gemini embed client
+│   │   │   ├── ingest/          # Excel + PDF/Chroma ingest
+│   │   │   ├── routes/          # auth, chat, tools, actions, data
+│   │   │   ├── tools/           # Search, structured query, calculators, writes
+│   │   │   ├── trust/           # Confidence / conflicts / citations
+│   │   │   └── vector/          # Chroma store + metadata filters
+│   │   ├── tests/
+│   │   ├── requirements.txt
+│   │   └── .env.example
+│   └── web/                     # Next.js App Router
+│       ├── src/
+│       │   ├── app/             # Home + customer/internal chat pages
+│       │   ├── components/      # ChatApp UI
+│       │   └── lib/             # Auth, stream, types
+│       ├── package.json
+│       └── .env.example
+├── Data/                        # Candidate PDFs + assessment xlsx
+├── packages/shared/             # Shared notes / types placeholder
+└── tests/golden/                # Golden eval scenario notes
 ```
 
 ---
@@ -60,8 +151,8 @@ tests/     API tests
 ### 1. Clone
 
 ```bash
-git clone <YOUR_REPO_URL>
-cd <repo-folder>
+git clone https://github.com/srijan-op/parcel-pilot-ai.git
+cd parcel-pilot-ai
 ```
 
 ### 2. Backend (`apps/api`)
@@ -70,26 +161,26 @@ cd <repo-folder>
 cd apps/api
 py -3 -m venv .venv
 .\.venv\Scripts\activate          # Windows
-# source .venv/bin/activate       # macOS / Linux
 
 pip install -r requirements.txt
 copy .env.example .env            # Windows
-# cp .env.example .env            # macOS / Linux
 ```
 
 Edit `apps/api/.env`:
 
-| Variable | Purpose |
-|----------|---------|
-| `GROQ_API_KEY` | Agent LLM |
-| `GROQ_API_KEY_2` | Optional fallback on 429 / TPM limits |
-| `GEMINI_API_KEY` | Embeddings |
-| `DATABASE_URL` | Postgres (URL-encode special characters in the password) |
-| `DATA_PATH` | Path to data pack (default `../../Data` or `../../data`) |
-| `CHROMA_PATH` | Vector index directory (default `./.chroma`) |
-| `CORS_ORIGINS` | Frontend origin(s), e.g. `http://localhost:3000` |
-| `JWT_SECRET` | Mock auth signing secret |
-| `SNAPSHOT_AT` / `SNAPSHOT_TZ` | Assessment clock (defaults match the data pack) |
+
+| Variable                      | Purpose                                                  |
+| ----------------------------- | -------------------------------------------------------- |
+| `GROQ_API_KEY`                | Agent LLM                                                |
+| `GROQ_API_KEY_2`              | Optional fallback on 429 / TPM limits                    |
+| `GEMINI_API_KEY`              | Embeddings                                               |
+| `DATABASE_URL`                | Postgres (URL-encode special characters in the password) |
+| `DATA_PATH`                   | Path to data pack (default `../../Data` or `../../data`) |
+| `CHROMA_PATH`                 | Vector index directory (default `./.chroma`)             |
+| `CORS_ORIGINS`                | Frontend origin(s), e.g. `http://localhost:3000`         |
+| `JWT_SECRET`                  | Mock auth signing secret                                 |
+| `SNAPSHOT_AT` / `SNAPSHOT_TZ` | Assessment clock (defaults match the data pack)          |
+
 
 **Load structured data** (Excel → Postgres):
 
@@ -111,8 +202,8 @@ python -m app.ingest.chroma
 uvicorn app.main:app --reload --port 8000
 ```
 
-- Health: http://localhost:8000/health  
-- OpenAPI: http://localhost:8000/docs  
+- Health: [http://localhost:8000/health](http://localhost:8000/health)  
+- OpenAPI: [http://localhost:8000/docs](http://localhost:8000/docs)
 
 **Reset demo data** after HITL writes (ticket updates, escalations):
 
@@ -140,7 +231,7 @@ NEXT_PUBLIC_API_URL=http://localhost:8000
 npm run dev
 ```
 
-Open http://localhost:3000 — pick **Customer** or **Internal**, choose a persona, then chat.
+Open [http://localhost:3000](http://localhost:3000) — pick **Customer** or **Internal**, choose a persona, then chat.
 
 ### 4. Tests (API)
 
@@ -161,19 +252,21 @@ pytest
 
 ### Example questions
 
-| Persona | Question |
-|---------|----------|
-| Northstar | Can I cancel ORD-1001 without a cancellation fee? |
-| Northstar | Cancel ORD-1002? |
-| LumenWorks | Show me the service credit for ORD-2002. |
-| Beacon | What’s the status of ORD-1001? (expect ACL deny) |
-| Maya | Check SLA on TKT-501 and escalate if breached. |
+
+| Persona    | Question                                          |
+| ---------- | ------------------------------------------------- |
+| Northstar  | Can I cancel ORD-1001 without a cancellation fee? |
+| Northstar  | Cancel ORD-1002?                                  |
+| LumenWorks | Show me the service credit for ORD-2002.          |
+| Beacon     | What’s the status of ORD-1001? (expect ACL deny)  |
+| Maya       | Check SLA on TKT-501 and escalate if breached.    |
+
 
 More scenarios: see assessment golden cases (cancel fees, credits, SLA, KI-208/211, HITL confirm).
 
 ---
 
-## Architecture note (short)
+## Architecture note 
 
 ### Agent design
 
@@ -183,12 +276,14 @@ More scenarios: see assessment golden cases (cancel fees, credits, SLA, KI-208/2
 
 ### Tool design
 
-| Tool | Role |
-|------|------|
-| `list_documents` | Optional catalog refresh (catalog also injected in the prompt) |
-| `document_search` | RAG over policies, SOP, agreements, known issues (ACL-filtered) |
-| `structured_data_query` | `get_*` / `list_*` plus `calc_cancellation`, `calc_service_credit`, `calc_sla` |
-| `create_escalation` / `update_ticket` / `create_follow_up_task` | Propose → HITL → execute + audit |
+
+| Tool                                                            | Role                                                                           |
+| --------------------------------------------------------------- | ------------------------------------------------------------------------------ |
+| `list_documents`                                                | Optional catalog refresh (catalog also injected in the prompt)                 |
+| `document_search`                                               | RAG over policies, SOP, agreements, known issues (ACL-filtered)                |
+| `structured_data_query`                                         | `get_`* / `list_*` plus `calc_cancellation`, `calc_service_credit`, `calc_sla` |
+| `create_escalation` / `update_ticket` / `create_follow_up_task` | Propose → HITL → execute + audit                                               |
+
 
 Access control is enforced **inside tools**, not only in the prompt (customers cannot read other accounts).
 
@@ -204,13 +299,15 @@ Precedence: **signed customer agreement > current policy/SOP > product docs**. H
 
 ### Major trade-offs
 
-| Choice | Why |
-|--------|-----|
-| Groq + Gemini split | Free-tier friendly; embeddings vs chat providers specialized |
-| Calculators in tools | Deterministic fees/SLA/credits instead of LLM arithmetic |
-| In-memory LangGraph checkpointer | Simple for demo; restart clears threads (DB is separate) |
-| Chroma on API disk | Simple local RAG; re-ingest on fresh hosts |
-| Mock JWT personas | Meets assessment auth without a real IdP |
+
+| Choice                           | Why                                                          |
+| -------------------------------- | ------------------------------------------------------------ |
+| Groq + Gemini split              | Free-tier friendly; embeddings vs chat providers specialized |
+| Calculators in tools             | Deterministic fees/SLA/credits instead of LLM arithmetic     |
+| In-memory LangGraph checkpointer | Simple for demo; restart clears threads (DB is separate)     |
+| Chroma on API disk               | Simple local RAG; re-ingest on fresh hosts                   |
+| Mock JWT personas                | Meets assessment auth without a real IdP                     |
+
 
 ---
 
@@ -222,22 +319,7 @@ Precedence: **signed customer agreement > current policy/SOP > product docs**. H
 
 *(Proactive ops dashboard / issue detection is planned as Problem 1 stretch; core chat + trust + HITL ship first.)*
 
-### What we would build next
 
-- Golden eval harness in CI  
-- Ops dashboard (SLA breaches, KI matches)  
-- Persistent checkpointer and production auth  
-- Stronger “must call calculator” guards when answering fees/SLA/credits  
-
-### Intentionally left out
-
-- Full Neo4j knowledge graph (Postgres + RAG is enough for the pack size)  
-- Real carrier integrations  
-- Production SSO / billing  
-
-### Success metric
-
-**Deflection quality:** % of golden eval queries answered correctly with citation-backed reasoning and **zero critical policy contradictions**, without human takeover.
 
 ---
 
@@ -249,16 +331,18 @@ Developed with **Cursor** (AI-assisted coding) for scaffolding, tool/ACL wiring,
 
 ## Hosted application
 
+
 | Service | URL |
-|---------|-----|
-| Web | _TBD — deploy pending_ |
-| API | _TBD — deploy pending_ |
+| ------- | --- |
+| Web     |     |
+| API     |     |
+
 
 ---
 
 ## Demo video
 
-_TBD — ~5 minutes covering architecture, live demo, and key decisions._
+*TBD — ~5 minutes covering architecture, live demo, and key decisions.*
 
 ---
 
