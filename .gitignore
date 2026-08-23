@@ -1,0 +1,41 @@
+# Python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+.pytest_cache/
+.mypy_cache/
+
+# Node
+node_modules/
+.next/
+out/
+npm-debug.log*
+
+# Environment & secrets
+.env
+.env.local
+.env.*.local
+!.env.example
+
+# Data stores
+.chroma/
+*.db
+
+# Internal / planning docs (not part of public submission package)
+docs/
+ParcelPilot_Assessment_Plan.md
+_calquity_extract.txt
+My_version_prompt.txt
+CalQuity AI Engineer - Job Description & AI Agent Assessment.pdf
+
+# IDE / OS
+.idea/
+.vscode/
+.DS_Store
+Thumbs.db
+
+# Build
+dist/
+build/
