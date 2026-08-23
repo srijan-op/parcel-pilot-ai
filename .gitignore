@@ -39,3 +39,5 @@ Thumbs.db
 # Build
 dist/
 build/
+
+ai-key.pem

@@ -1,0 +1,20 @@
+# Used when building from repo root (docker compose / -f apps/*/Dockerfile .)
+.git
+.venv
+venv
+**/node_modules
+**/.next
+**/.chroma
+**/.env
+**/.env.*
+!**/.env.example
+docs
+**/__pycache__
+**/*.pyc
+**/.pytest_cache
+**/.vscode
+IMPLEMENTATION_NOTES.md
+ParcelPilot_Assessment_Plan.md
+_calquity_extract.txt
+My_version_prompt.txt
+ai-key.pem

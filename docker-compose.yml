@@ -1,0 +1,48 @@
+# ParcelPilot on EC2 — API + Web
+#
+# 1. Copy apps/api/.env.example → apps/api/.env and fill keys
+# 2. Set NEXT_PUBLIC_API_URL to http://YOUR_ELASTIC_IP:8000
+# 3. Set CORS_ORIGINS in apps/api/.env to http://YOUR_ELASTIC_IP:3000
+# 4. First boot (ingest):
+#      RUN_INGEST=1 RUN_CHROMA_INGEST=1 docker compose up -d --build
+#    Later boots (reuse chroma volume):
+#      docker compose up -d
+#
+# Build from repo root.
+
+services:
+  api:
+    build:
+      context: .
+      dockerfile: apps/api/Dockerfile
+    image: parcelpilot-api:latest
+    ports:
+      - "8000:8000"
+    env_file:
+      - apps/api/.env
+    environment:
+      DATA_PATH: ./Data
+      CHROMA_PATH: /data/chroma
+      # First deploy only — set to 0 after chroma/postgres are loaded
+      RUN_INGEST: ${RUN_INGEST:-0}
+      RUN_CHROMA_INGEST: ${RUN_CHROMA_INGEST:-0}
+    volumes:
+      - chroma_data:/data/chroma
+    restart: unless-stopped
+
+  web:
+    build:
+      context: .
+      dockerfile: apps/web/Dockerfile
+      args:
+        # Browser-facing API URL (Elastic IP or domain). Rebuild after changing.
+        NEXT_PUBLIC_API_URL: ${NEXT_PUBLIC_API_URL:-http://localhost:8000}
+    image: parcelpilot-web:latest
+    ports:
+      - "3000:3000"
+    depends_on:
+      - api
+    restart: unless-stopped
+
+volumes:
+  chroma_data:
